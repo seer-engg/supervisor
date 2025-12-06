@@ -106,7 +106,7 @@ from langfuse.types import TraceContext
 trace_context = TraceContext(
     session_id="my-session",
     user_id="user-123",
-    tags=["delegate-model"]
+    tags=["supervisor"]
 )
 langfuse_handler = CallbackHandler(trace_context=trace_context)
 
@@ -145,7 +145,7 @@ result = await agent.ainvoke(initial_state, config=config)
 ## File Structure
 
 ```
-delegate-model/
+supervisor/
 ├── agents/
 │   ├── __init__.py
 │   ├── supervisor.py      # Main orchestrator
