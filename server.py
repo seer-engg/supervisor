@@ -83,12 +83,35 @@ add_routes(
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
+    """Health check endpoint with environment variable validation."""
+    required_vars = [
+        "OPENAI_API_KEY",
+        "COMPOSIO_USER_ID",
+        "PINECONE_API_KEY",
+        "PINECONE_INDEX_NAME"
+    ]
+    
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    status = "healthy" if not missing_vars else "unhealthy"
+    
+    response = {
+        "status": status,
         "service": "supervisor-agent",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "environment": {
+            "openai_api_key_set": bool(os.getenv("OPENAI_API_KEY")),
+            "composio_user_id_set": bool(os.getenv("COMPOSIO_USER_ID")),
+            "pinecone_api_key_set": bool(os.getenv("PINECONE_API_KEY")),
+            "pinecone_index_name_set": bool(os.getenv("PINECONE_INDEX_NAME")),
+        }
     }
+    
+    if missing_vars:
+        response["missing_variables"] = missing_vars
+        response["error"] = f"Missing required environment variables: {', '.join(missing_vars)}"
+    
+    return response
 
 # Root endpoint
 @app.get("/")

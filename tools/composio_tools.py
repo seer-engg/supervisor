@@ -17,14 +17,37 @@ from models import ToolParameter, ToolDefinition
 import logging
 logger = logging.getLogger(__name__)
 
-# Global Pinecone store instance
+# Global Pinecone store instance (lazy-loaded)
 # Note: embedding_dimensions must match Pinecone index dimension (512)
-_TOOLHUB_INSTANCE = ToolHub(
-    openai_api_key=os.getenv("OPENAI_API_KEY"),
-    pinecone_index_name=os.getenv("PINECONE_INDEX_NAME"),
-    pinecone_api_key=os.getenv("PINECONE_API_KEY"),
-    embedding_dimensions=512  # Must match Pinecone index dimension
-)
+_TOOLHUB_INSTANCE = None
+
+def _get_toolhub_instance():
+    """
+    Lazy-load ToolHub instance.
+    This ensures environment variables are available when initialization happens.
+    """
+    global _TOOLHUB_INSTANCE
+    if _TOOLHUB_INSTANCE is None:
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
+        pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        
+        if not openai_api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        if not pinecone_index_name:
+            raise ValueError("PINECONE_INDEX_NAME environment variable is required")
+        if not pinecone_api_key:
+            raise ValueError("PINECONE_API_KEY environment variable is required")
+        
+        _TOOLHUB_INSTANCE = ToolHub(
+            openai_api_key=openai_api_key,
+            pinecone_index_name=pinecone_index_name,
+            pinecone_api_key=pinecone_api_key,
+            embedding_dimensions=512  # Must match Pinecone index dimension
+        )
+        logger.info("✅ ToolHub instance initialized")
+    
+    return _TOOLHUB_INSTANCE
 
 def get_available_integrations() -> List[str]:
     """
@@ -66,10 +89,10 @@ async def _search_tools_in_pinecone(
         List of tool dictionaries
     """
     
-    if not _TOOLHUB_INSTANCE:
-        raise ValueError("Pinecone ToolHub not available. Tools must be pre-computed.")
+    # Lazy-load ToolHub instance (initializes on first use)
+    toolhub = _get_toolhub_instance()
     
-    results = await _TOOLHUB_INSTANCE.query(
+    results = await toolhub.query(
         query=query,
         integration_name=integration_name,
         top_k=top_k
