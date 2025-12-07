@@ -174,6 +174,10 @@ def _extract_planned_execution(scratchpad: str) -> Optional[Dict[str, Any]]:
         None if no tool detected or schema not found
     """
     # **STEP 1: Try to detect tool name (lightweight - regex)**
+    # Skip built-in tools that don't require planning/schema validation
+    if "search_tools" in scratchpad.lower() or "write_todos" in scratchpad.lower() or "spawn_worker" in scratchpad.lower():
+        return None
+
     integrations = get_available_integrations()
     integration_patterns = [f"{i.upper()}_\\w+" for i in integrations]
     pattern = f"({'|'.join(integration_patterns)})"

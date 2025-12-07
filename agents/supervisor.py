@@ -3,7 +3,7 @@ import logging
 from langchain_openai import ChatOpenAI
 # Import config to ensure environment variables are loaded
 import config
-from langchain_core.messages import SystemMessage, ToolMessage, AIMessage
+from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage, BaseMessage
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, ModelRetryMiddleware
 from langchain_core.tools import tool
@@ -176,6 +176,78 @@ def create_supervisor():
         logger.info("🤖 Supervisor Node Active")
         messages = state.get("messages", [])
         
+        # Ensure all messages are proper LangChain message objects
+        # LangServe may pass dicts or BaseMessage instances that need to be proper subclasses
+        # CRITICAL: create_agent expects HumanMessage, AIMessage, etc., not generic BaseMessage
+        normalized_messages = []
+        for msg in messages:
+            try:
+                if isinstance(msg, dict):
+                    # Convert dict to proper message object
+                    msg_type = msg.get("type") or msg.get("role", "human")
+                    content = msg.get("content", "") or ""  # Ensure string
+                    tool_calls = msg.get("tool_calls", [])
+                    id_ = msg.get("id")
+                    name = msg.get("name")
+                    
+                    if msg_type == "human" or msg_type == "user":
+                        normalized_messages.append(HumanMessage(content=content, id=id_, name=name))
+                    elif msg_type == "ai" or msg_type == "assistant":
+                        normalized_messages.append(AIMessage(content=content, tool_calls=tool_calls, id=id_, name=name))
+                    elif msg_type == "system":
+                        normalized_messages.append(SystemMessage(content=content, id=id_, name=name))
+                    elif msg_type == "tool":
+                        tool_call_id = msg.get("tool_call_id")
+                        # Tool messages must have tool_call_id
+                        if tool_call_id:
+                            normalized_messages.append(ToolMessage(content=content, tool_call_id=tool_call_id, id=id_, name=name))
+                        else:
+                            # Fallback for missing tool_call_id
+                            logger.warning(f"Tool message missing tool_call_id, treating as human message")
+                            normalized_messages.append(HumanMessage(content=f"[Tool Output] {content}", id=id_, name=name))
+                    else:
+                        normalized_messages.append(HumanMessage(content=content, id=id_, name=name))
+                elif isinstance(msg, BaseMessage):
+                    # BaseMessage but not proper subclass - recreate based on type attribute
+                    msg_type = getattr(msg, "type", None)
+                    content = getattr(msg, "content", "") or ""
+                    id_ = getattr(msg, "id", None)
+                    name = getattr(msg, "name", None)
+                    tool_calls = getattr(msg, "tool_calls", [])
+                    
+                    if msg_type == "human" or msg_type == "user":
+                        normalized_messages.append(HumanMessage(content=content, id=id_, name=name))
+                    elif msg_type == "ai" or msg_type == "assistant":
+                        normalized_messages.append(AIMessage(content=content, tool_calls=tool_calls, id=id_, name=name))
+                    elif msg_type == "system":
+                        normalized_messages.append(SystemMessage(content=content, id=id_, name=name))
+                    elif msg_type == "tool":
+                        tool_call_id = getattr(msg, "tool_call_id", None)
+                        if tool_call_id:
+                            normalized_messages.append(ToolMessage(content=content, tool_call_id=tool_call_id, id=id_, name=name))
+                        else:
+                            normalized_messages.append(HumanMessage(content=f"[Tool Output] {content}", id=id_, name=name))
+                    else:
+                        # Fallback: treat as human message
+                        logger.warning(f"BaseMessage with unknown type '{msg_type}', treating as human")
+                        normalized_messages.append(HumanMessage(content=content, id=id_, name=name))
+                else:
+                    logger.warning(f"Unexpected message type: {type(msg)}, skipping")
+            except Exception as e:
+                logger.error(f"Error normalizing message: {e}, skipping", exc_info=True)
+        
+        messages = normalized_messages
+        
+        # DEBUG: Log the message content being processed
+        if messages:
+            last_msg = messages[-1]
+            if hasattr(last_msg, 'content'):
+                logger.debug(f"📥 Processing message: type={type(last_msg).__name__}, content='{last_msg.content[:200]}...'")
+            else:
+                logger.debug(f"📥 Processing message: type={type(last_msg).__name__}, content=<no content>")
+        else:
+            logger.warning("⚠️ Supervisor received NO messages!")
+        
         # Format todos for display
         todos = state.get("todos", [])
         if todos:
@@ -198,10 +270,30 @@ def create_supervisor():
         # Invoke the agent
         logger.info(f"Invoking Supervisor (Todos: {len(todos)} items)")
         
+        # Extract callbacks from state if available (for LangSmith tracing)
+        callbacks = state.get("callbacks", [])
+        
         agent_input = dict(state)
         agent_input["messages"] = messages
         
-        result = await agent_runnable.ainvoke(agent_input)
+        # Pass callbacks to agent invocation if available
+        invoke_kwargs = {}
+        if callbacks:
+            invoke_kwargs["config"] = {"callbacks": callbacks}
+            logger.debug(f"📊 Passing {len(callbacks)} callback(s) to agent")
+        
+        result = await agent_runnable.ainvoke(agent_input, **invoke_kwargs)
+        
+        # DEBUG: Log agent response
+        agent_messages = result.get("messages", [])
+        logger.debug(f"📤 Agent returned {len(agent_messages)} message(s)")
+        
+        # Log tool calls if any
+        for msg in agent_messages:
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_name = tc.get('name') if isinstance(tc, dict) else getattr(tc, 'name', 'unknown')
+                    logger.info(f"🛠️  Agent called tool: {tool_name}")
         
         # Extract todos updates from write_todos tool calls
         state_updates = {}
