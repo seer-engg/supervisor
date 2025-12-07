@@ -26,7 +26,9 @@ import config  # noqa: F401
 
 import os
 import logging
-from fastapi import FastAPI
+import uuid
+from typing import Any, Dict
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
 
@@ -69,12 +71,37 @@ app.add_middleware(
 # - POST /agent/stream - Streaming invocation
 # - POST /agent/batch - Batch invocation
 # - GET /agent/playground - Interactive playground (if enabled)
+
+def per_req_config_modifier(config: Dict[str, Any], request: Request) -> Dict[str, Any]:
+    """
+    Modify the config for each request.
+    Ensures thread_id exists in configurable to prevent Checkpointer errors.
+    """
+    if "configurable" not in config:
+        config["configurable"] = {}
+    
+    # Check if thread_id is missing
+    if "thread_id" not in config["configurable"]:
+        # Try to find it in the request body (if accessible) or generate new one
+        # Note: Request body is already consumed by LangServe, so we can't easily read it here
+        # unless we use a workaround. For now, generate a new ID if missing.
+        
+        # Log that we are generating a fallback ID
+        generated_id = str(uuid.uuid4())
+        config["configurable"]["thread_id"] = generated_id
+        logger.warning(f"⚠️ thread_id missing in request config. Generated fallback ID: {generated_id}")
+    else:
+        logger.info(f"Using provided thread_id: {config['configurable']['thread_id']}")
+        
+    return config
+
 add_routes(
     app,
     graph,
     path="/agent",
     # Enable playground for testing (disable in production)
     playground_type="chat",
+    per_req_config_modifier=per_req_config_modifier,
 )
 
 # Health check endpoint
