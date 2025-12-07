@@ -74,7 +74,7 @@ add_routes(
     graph,
     path="/agent",
     # Enable playground for testing (disable in production)
-    playground_type="default",
+    playground_type="chat",
 )
 
 # Health check endpoint
