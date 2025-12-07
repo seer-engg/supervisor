@@ -58,5 +58,5 @@ langfuse/
 
 # Results
 results/
-*.json
 
+.langgraph_api/

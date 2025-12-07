@@ -3,24 +3,22 @@ import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage
 from langchain.agents import create_agent
-from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware import ToolCallLimitMiddleware, ModelRetryMiddleware
 from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 from langgraph.graph import StateGraph, END, START
-from langgraph.types import Command
 
 from .state import SupervisorState
 from tools.spawn_worker import spawn_worker
-from tools.openai_retry_middleware import wrap_model_with_retry
 from tools.think_tool import think
-from langgraph.store.base import BaseStore
+from tools.composio_tools import get_available_integrations
 from models import WorkerResponse, WorkerStatus
 
 logger = logging.getLogger(__name__)
 
 
 @tool
-def write_todos(todos: list[str], runtime: ToolRuntime = None) -> Command:
+def write_todos(todos: list[str], runtime: ToolRuntime = None) -> str:
     """Update the todos list. Pass a list of todo items (strings).
     
     **CRITICAL GROUPING RULE:**
@@ -40,14 +38,10 @@ def write_todos(todos: list[str], runtime: ToolRuntime = None) -> Command:
     Example: write_todos(["Get PR from GitHub: Find and extract details", "Sync PR to Asana: Search, create/update, and close"])
     
     This replaces the entire todos list. Use this to create or update your plan."""
-    tool_message = ToolMessage(
-        content=f"✅ Todos updated: {len(todos)} items",
-        tool_call_id=runtime.tool_call_id if runtime and hasattr(runtime, 'tool_call_id') else "write_todos"
-    )
-    return Command(update={"todos": todos, "messages": [tool_message]})
+    return f"✅ Todos updated: {len(todos)} items"
 
 
-def create_supervisor(store: BaseStore = None):
+def create_supervisor():
     """
     Creates the Unified Supervisor Agent.
     
@@ -55,8 +49,11 @@ def create_supervisor(store: BaseStore = None):
     - Single Node ("supervisor") that handles both planning and execution.
     - Maintains a 'todos' list in state (simple list of strings).
     - Dynamically decides to update todos or spawn workers.
-    - Uses Shared In-Memory Store for artifacts.
     """
+    
+    # Get available integrations
+    available_integrations = get_available_integrations()
+    integrations_list = ", ".join([i.upper() for i in available_integrations])
     
     # 1. Define Tools
     tools = [
@@ -65,58 +62,109 @@ def create_supervisor(store: BaseStore = None):
         spawn_worker,
     ]
     
-    # 2. Define System Prompt (PRUNED - ~600 chars vs ~1800)
-    system_prompt_template = """You are the Supervisor Agent. Complete the user's request by creating todos and delegating to Workers.
+    # 2. Define System Prompt
+    system_prompt_template = """You are the Supervisor Agent. Handle user requests appropriately: answer informational queries directly, or create todos and delegate actionable tasks to Workers.
+
+**AVAILABLE INTEGRATIONS:**
+{integrations_list}
 
 **CURRENT TODOS:**
 {todos_text}
 
 **PROTOCOL:**
-1. **PLAN**: If todos empty, call `write_todos()` to create plan.
+1. **PLAN**: If todos empty AND the user's request requires action (not just information), call `write_todos()` to create plan.
+   - **Informational queries** (e.g., "What can you do?", "How does this work?", "List capabilities"): Answer directly. Do NOT create todos or spawn workers.
+   - **Actionable tasks** (e.g., "Sync PR to Asana", "Create a task", "Send an email"): Proceed with planning and delegation.
    - **CRITICAL**: Group todos by SERVICE/DOMAIN boundaries (GitHub, Asana, Gmail, etc.)
    - Each todo = ALL work within ONE service/domain
    - Example: "Get PR from GitHub: Find most recent merged PR and extract all details" (NOT separate "search" + "extract")
    - Example: "Sync PR to Asana: Search for tasks, create/update with PR details, and close" (NOT separate "search" + "create" + "close")
    
-2. **DELEGATE**: For each todo, call `spawn_worker(instruction, reasoning)` with:
+2. **DELEGATE**: For each todo, call `spawn_worker(instruction, reasoning, integrations)` with:
    - `instruction`: CONCISE task instruction
    - `reasoning`: **MANDATORY** - WHY this worker is needed and what service/domain it handles
-   - GOOD: spawn_worker("Fetch most recent merged PR from seer-engg/buggy-coder and extract details", "GitHub domain: Finding and extracting PR information")
-   - BAD: spawn_worker("Search GitHub", "Need to find PR") ❌ Too vague
+   - `integrations`: **OPTIONAL** - List of integration names (lowercase) to restrict tool search.
+     * Specify integrations to make worker faster and more focused (e.g., ["github"], ["asana"], ["github", "asana"])
+     * If omitted, worker searches all integrations (slower but comprehensive)
+     * Match integrations to the service/domain in your reasoning
+   - GOOD: spawn_worker("Fetch most recent merged PR from seer-engg/buggy-coder and extract details", "GitHub domain: Finding and extracting PR information", ["github"])
+   - GOOD: spawn_worker("Sync PR to Asana: Search for tasks and create/update", "Asana domain: Task management operations", ["asana"])
+   - BAD: spawn_worker("Search GitHub", "Need to find PR") ❌ Too vague, missing integrations
    
 3. **REVIEW**: After worker completes, remove completed todo using `write_todos()`.
 4. **FINISH**: When todos empty, respond to user.
 
-**MANDATORY THINKING:**
-After EVERY tool call (except 'think'), call `think()` to reason. ALWAYS reference CURRENT TODOS above.
+**🚨 CRITICAL: ALTERNATING TOOL CALL PATTERN 🚨**
+
+**YOU MUST FOLLOW THIS EXACT PATTERN FOR EVERY TOOL CALL:**
+- **Tool Call #1 (ODD):** `think()` - ALWAYS start with think()
+- **Tool Call #2 (EVEN):** `write_todos()` or `spawn_worker()` - Your action tool
+- **Tool Call #3 (ODD):** `think()` - Reflect on results
+- **Tool Call #4 (EVEN):** `write_todos()` or `spawn_worker()` - Next action tool
+- **Tool Call #5 (ODD):** `think()` - Reflect again
+- **Pattern continues:** think → tool → think → tool → think → tool...
+
+**THIS IS NON-NEGOTIABLE:**
+- ❌ NEVER call `write_todos()` or `spawn_worker()` without calling `think()` first
+- ❌ NEVER call two action tools in a row (always think() between them)
+- ✅ ALWAYS call `think()` before every `write_todos()` or `spawn_worker()` call
+- ✅ ALWAYS call `think()` after every `write_todos()` or `spawn_worker()` call
+
+**INTERNAL TOOLS (Call Directly):**
+- `think(scratchpad, last_tool_call)` - Plan and reflect (MUST be called before AND after every action tool)
+- `write_todos(todos)` - Manage task list
+- `spawn_worker(task, reasoning, integrations)` - Delegate to workers
+
+**EXTERNAL TOOLS (Not Directly Available to You):**
+- Workers have access to external tools (GITHUB_*, ASANA_*, GMAIL_*, etc.) via `execute_tool`
+- You cannot call external tools directly
+- Delegate to workers for external tool execution
+
+**MANDATORY THINKING (ABSOLUTE):**
+- **BEFORE your FIRST tool call:** Call `think()` to plan your approach. Reference CURRENT TODOS above.
+- **CRITICAL: `last_tool_call` parameter is REQUIRED on every `think()` call**
+  - First call: `last_tool_call="Tool: None, Result: Initial call"`
+  - After tool calls: `last_tool_call="Tool: <tool_name>, Result: <what happened>"`
+- **BEFORE every `write_todos()` or `spawn_worker()` call:** Call `think()` to plan
+- **AFTER every `write_todos()` or `spawn_worker()` call:** Call `think()` to reflect on results AND plan next steps
+- **ALWAYS reference CURRENT TODOS above** in your thinking
+- **Pattern:** think → tool → think → tool → think → tool (alternating, never two tools in a row)
 
 **RULES:**
 - Delegate heavy work to `spawn_worker`. Don't do it yourself.
 - Group todos by domain/service - don't split same-service tasks.
 - **ALWAYS provide reasoning when spawning workers** - explain the service/domain and why.
+- **SELECT APPROPRIATE INTEGRATIONS** - Match integrations to the service/domain (e.g., GitHub tasks → ["github"], Asana tasks → ["asana"])
 - Keep todos visible. Update them as you progress.
 """
     
     # 3. Define Model & Middleware
     model = ChatOpenAI(model="gpt-5-mini", temperature=0.0)
-    model = wrap_model_with_retry(model, max_retries=3)  # Retry on invalid_prompt errors (total 4 attempts)
     
+    # Middleware: Model retry + Tool call limits
+    # ModelRetryMiddleware: Retries model calls with exponential backoff (4 total attempts: initial + 3 retries)
     middleware = [
+        ModelRetryMiddleware(
+            max_retries=3,  # 3 retries (4 total attempts)
+            backoff_factor=2.0,  # Exponential backoff: 2s, 4s, 8s
+            initial_delay=2.0,  # Initial delay of 2 seconds
+        ),
         ToolCallLimitMiddleware(thread_limit=30, run_limit=10),
         ToolCallLimitMiddleware(tool_name="write_todos", thread_limit=5, run_limit=3),
         ToolCallLimitMiddleware(tool_name="spawn_worker", thread_limit=10, run_limit=4),  # Increased: allow one more worker spawn
     ]
     
     # 4. Create the Agent
+    # NOTE: We don't pass system_prompt here because we manage it manually
+    # in supervisor_node to dynamically update it with todos
     agent_runnable = create_agent(
         model=model,
         tools=tools,
-        system_prompt=system_prompt_template,
         middleware=middleware
     )
     
     # 5. Define the Node
-    async def supervisor_node(state: SupervisorState, config: dict = None):
+    async def supervisor_node(state: SupervisorState):
         logger.info("🤖 Supervisor Node Active")
         messages = state.get("messages", [])
         
@@ -127,8 +175,9 @@ After EVERY tool call (except 'think'), call `think()` to reason. ALWAYS referen
         else:
             todos_text = "  (No todos yet)"
         
-        # Format the system prompt with current todos
+        # Format the system prompt with current todos and integrations
         formatted_system_prompt = system_prompt_template.format(
+            integrations_list=integrations_list,
             todos_text=todos_text
         )
         
@@ -146,14 +195,36 @@ After EVERY tool call (except 'think'), call `think()` to reason. ALWAYS referen
         
         result = await agent_runnable.ainvoke(agent_input)
         
-        # Check for todos updates from Command.update
+        # Extract todos updates from write_todos tool calls
         state_updates = {}
-        if "todos" in result:
-            state_updates["todos"] = result["todos"]
-            logger.info(f"✅ Todos update found in result: {len(result['todos'])} items")
+        agent_messages = result.get("messages", [])
+        
+        # Look for write_todos tool calls and extract the todos argument
+        for msg in reversed(agent_messages):
+            if isinstance(msg, ToolMessage) and msg.name == "write_todos":
+                # Find the corresponding AIMessage with the tool call
+                tool_call_id = getattr(msg, 'tool_call_id', None)
+                if tool_call_id:
+                    for prev_msg in agent_messages:
+                        if isinstance(prev_msg, AIMessage) and hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
+                            for tc in prev_msg.tool_calls:
+                                tc_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                                if tc_id == tool_call_id:
+                                    # Extract todos from tool call arguments
+                                    args = tc.get('args', {}) if isinstance(tc, dict) else getattr(tc, 'args', {})
+                                    if isinstance(args, dict) and 'todos' in args:
+                                        todos_list = args['todos']
+                                        state_updates["todos"] = todos_list
+                                        logger.info(f"✅ Todos update found in write_todos call: {len(todos_list)} items")
+                                        break
+                            if "todos" in state_updates:
+                                break
+                if "todos" in state_updates:
+                    break
         
         # Auto-remove completed todos based on spawn_worker responses
-        agent_messages = result.get("messages", [])
+        # Process ALL worker completions, not just the first one
+        successful_workers = 0
         for msg in reversed(agent_messages):
             if isinstance(msg, ToolMessage) and msg.name == "spawn_worker":
                 try:
@@ -178,19 +249,23 @@ After EVERY tool call (except 'think'), call `think()` to reason. ALWAYS referen
                         logger.info(f"📋 Worker reasoning: {reasoning}")
                     
                     if worker_response.status == WorkerStatus.SUCCESS:
-                        # Find which todo was completed (by matching instruction)
-                        # For now, remove the first todo if worker succeeded
-                        current_todos = state.get("todos", [])
-                        if current_todos:
-                            # Simple heuristic: remove first todo if worker succeeded
-                            # In future, could match by instruction content
-                            updated_todos = current_todos[1:]
-                            if updated_todos != current_todos:
-                                state_updates["todos"] = updated_todos
-                                logger.info(f"✅ Auto-removed completed todo. Remaining: {len(updated_todos)}")
+                        successful_workers += 1
+                        logger.debug(f"✅ Worker completed successfully (total: {successful_workers})")
                 except (json.JSONDecodeError, Exception) as e:
-                    logger.debug(f"Could not auto-update todos from spawn_worker: {e}")
-                break
+                    logger.debug(f"Could not parse worker response: {e}")
+        
+        # Remove todos based on number of successful workers
+        if successful_workers > 0:
+            current_todos = state.get("todos", [])
+            if len(current_todos) >= successful_workers:
+                updated_todos = current_todos[successful_workers:]
+                if updated_todos != current_todos:
+                    state_updates["todos"] = updated_todos
+                    logger.info(f"✅ Auto-removed {successful_workers} completed todo(s). Remaining: {len(updated_todos)}")
+            else:
+                # More successful workers than todos - clear all todos
+                state_updates["todos"] = []
+                logger.info(f"✅ All {len(current_todos)} todos completed by {successful_workers} workers")
         
         if state_updates:
             result.update(state_updates)
@@ -219,5 +294,5 @@ After EVERY tool call (except 'think'), call `think()` to reason. ALWAYS referen
         END: END
     })
     
-    return workflow.compile(debug=True, store=store)
+    return workflow.compile()
 

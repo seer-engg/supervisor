@@ -3,10 +3,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from tools.runtime_tool_store import _runtime_tool_store
 from tools.secrets_store import _secrets_store
-from models import ToolExecutionPlanBase
+from tools.composio_tools import get_available_integrations
+from models import ToolDefinition, ToolParameter
+from pydantic import BaseModel, Field, create_model
 import re
 import logging
-from typing import Dict
+from typing import Dict, Optional, Any, Type, List
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +31,19 @@ def _get_all_env_vars() -> Dict[str, str]:
 
 @tool
 def think(
+    last_tool_call: str,
     scratchpad: str,
-    last_tool_call: str = "",  # Optional: What tool was just called and what it returned
 ) -> str:
     """Use this tool to think and reason about the current situation.
     
     **CRITICAL: You MUST call this tool BEFORE calling execute_tool.**
     Every execute_tool call MUST be preceded by a think() call that plans the execution.
+    
+    **REQUIRED: `last_tool_call` parameter**
+    - You MUST provide `last_tool_call` on EVERY call
+    - Format: "Tool: <tool_name>, Result: <what happened>"
+    - For first call: "Tool: None, Result: Initial call"
+    - After tool execution: "Tool: <tool_name>, Result: <success/error summary>"
     
     **BEFORE CALLING execute_tool - MANDATORY PLANNING:**
     When planning to call execute_tool, explicitly state in your scratchpad:
@@ -47,7 +55,7 @@ def think(
     3. Verify required params are provided with non-empty values
     
     **AFTER CALLING execute_tool - REFLECTION:**
-    Reflect on results and plan next steps.
+    Reflect on results and plan next steps. Always include what tool was called and what happened.
     
     **FORMAT YOUR THINKING:**
     Use the scratchpad to:
@@ -61,40 +69,143 @@ def think(
     planned_execution = _extract_planned_execution(scratchpad)
     
     if planned_execution:
-        # Store planned execution in runtime store
-        _runtime_tool_store.store_planned_execution(planned_execution)
-        logger.debug(f"✅ Stored planned execution for tool: {planned_execution.tool_name}")
+        # Store planned execution in runtime store (thread-scoped, using "default" for now)
+        # TODO: Extract thread_id from runtime context if available
+        _runtime_tool_store.store_planned_execution(planned_execution, thread_id="default")
+        logger.debug("✅ Stored planned execution for tool: %s", planned_execution['tool_name'])
     
-    # Return formatted response
+    # Return formatted response - always include last_tool_call
     parts = [f"Thought: {scratchpad}"]
-    if last_tool_call:
-        parts.append(f"Last tool: {last_tool_call}")
+    parts.append(f"Last tool: {last_tool_call}")
     return "\n".join(parts)
 
 
-def _extract_planned_execution(scratchpad: str) -> ToolExecutionPlanBase | None:
+def _json_schema_type_to_python(json_type: str) -> Type:
+    """Map JSON Schema type to Python type."""
+    type_mapping = {
+        'string': str,
+        'integer': int,
+        'number': float,
+        'boolean': bool,
+        'array': List[Any],  # Could be more specific if items type available
+        'object': Dict[str, Any],
+    }
+    return type_mapping.get(json_type.lower(), str)  # Default to str
+
+
+def _create_tool_params_model(tool_schema: ToolDefinition) -> Type[BaseModel]:
+    """Dynamically create Pydantic model from tool schema.
+    
+    Args:
+        tool_schema: ToolDefinition with parameters
+        
+    Returns:
+        Dynamic Pydantic model class for tool parameters
+        
+    Raises:
+        ValueError: If tool has no schema (should not happen - schema required)
     """
-    Use LLM with structured output to extract planned tool execution from scratchpad.
-    Single LLM call with tool schema context for better validation.
+    from typing import Optional
+    
+    field_definitions = {}
+    
+    for param in tool_schema.parameters:
+        # Map JSON Schema types to Python types
+        python_type = _json_schema_type_to_python(param.type)
+        
+        if param.required:
+            field_definitions[param.name] = (
+                python_type, 
+                Field(description=param.description)
+            )
+        else:
+            field_definitions[param.name] = (
+                Optional[python_type], 
+                Field(default=None, description=param.description)
+            )
+    
+    # Create model name from tool name (sanitize for Python class name)
+    model_name = f"{tool_schema.name.replace('.', '_').replace('-', '_')}Params"
+    
+    if not field_definitions:
+        # Empty model for tools with no parameters
+        return create_model(model_name)
+    
+    return create_model(model_name, **field_definitions)
+
+
+def _create_execution_plan_model(tool_schema: ToolDefinition) -> Type[BaseModel]:
+    """Create execution plan model with tool-specific params model.
+    
+    Args:
+        tool_schema: ToolDefinition with parameters
+        
+    Returns:
+        Dynamic Pydantic model class with tool_name, reasoning, and params
+    """
+    params_model = _create_tool_params_model(tool_schema)
+    
+    model_name = f"{tool_schema.name.replace('.', '_').replace('-', '_')}ExecutionPlan"
+    
+    return create_model(
+        model_name,
+        tool_name=(str, Field(description="Tool name")),
+        reasoning=(str, Field(description="Why this tool is needed")),
+        params=(params_model, Field(description="Tool parameters"))
+    )
+
+
+def _extract_planned_execution(scratchpad: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract planned tool execution using dynamic Pydantic model from tool schema.
+    
+    **SCHEMA REQUIRED:** This function requires a tool schema. If no schema is found,
+    the tool cannot be executed and None is returned.
+    
+    Returns:
+        Dict with keys: tool_name, reasoning, params (dict)
+        None if no tool detected or schema not found
     """
     # **STEP 1: Try to detect tool name (lightweight - regex)**
-    tool_name_match = re.search(r'(GITHUB_\w+|ASANA_\w+|SLACK_\w+|GMAIL_\w+|GOOGLE\w+_\w+)', scratchpad)
+    integrations = get_available_integrations()
+    integration_patterns = [f"{i.upper()}_\\w+" for i in integrations]
+    pattern = f"({'|'.join(integration_patterns)})"
+    tool_name_match = re.search(pattern, scratchpad, re.IGNORECASE)
     if not tool_name_match and "execute_tool" not in scratchpad.lower():
         return None
     
-    # If we found a tool name, get its schema
+    # **STEP 2: Get tool schema - REQUIRED (no fallback)**
     tool_name = tool_name_match.group(1) if tool_name_match else None
-    tool_schema = None
-    if tool_name:
-        tool_schema = _runtime_tool_store.get_tool_schema(tool_name)
+    if not tool_name:
+        # Try to extract from scratchpad text if regex didn't match
+        # Look for patterns like "I will call TOOL_NAME" or "call TOOL_NAME"
+        tool_name_match = re.search(r'(?:call|execute|use)\s+([A-Z_][A-Z0-9_]+)', scratchpad, re.IGNORECASE)
+        if tool_name_match:
+            tool_name = tool_name_match.group(1)
     
-    # Build schema section for prompt
-    schema_section = ""
-    if tool_schema:
-        required_params = [p for p in tool_schema.parameters if p.required]
-        optional_params = [p for p in tool_schema.parameters if not p.required]
-        
-        schema_section = f"""
+    if not tool_name:
+        logger.debug("No tool name detected in scratchpad")
+        return None
+    
+    tool_schema = _runtime_tool_store.get_tool_schema(tool_name)
+    
+    # **SCHEMA REQUIRED - NO FALLBACK**
+    if not tool_schema:
+        logger.warning("❌ Tool '%s' has no schema. Cannot execute. Agent must use a different tool.", tool_name)
+        return None
+    
+    # **STEP 3: Create dynamic Pydantic model from schema**
+    try:
+        execution_plan_model = _create_execution_plan_model(tool_schema)
+    except Exception as e:
+        logger.error(f"Failed to create dynamic model for {tool_name}: {e}")
+        return None
+    
+    # **STEP 4: Build prompt with schema context**
+    required_params = [p for p in tool_schema.parameters if p.required]
+    optional_params = [p for p in tool_schema.parameters if not p.required]
+    
+    schema_section = f"""
 **TOOL SCHEMA:**
 Tool: {tool_schema.name}
 Description: {tool_schema.description}
@@ -105,19 +216,12 @@ Description: {tool_schema.description}
 **Optional Parameters:**
 {chr(10).join(f"- {p.name} ({p.type}): {p.description}" for p in optional_params) if optional_params else "None"}
 """
-    else:
-        schema_section = """
-**TOOL SCHEMA:**
-Tool name not detected or schema not found. Extract tool name from scratchpad if mentioned.
-"""
     
     # Get all environment variables
     env_vars = _get_all_env_vars()
     env_vars_section = ""
     if env_vars:
-        # Escape curly braces in env var values to prevent LangChain template parsing
         def escape_braces(value: str) -> str:
-            """Escape curly braces for LangChain template."""
             return str(value).replace("{", "{{").replace("}", "}}")
         
         env_vars_list = "\n".join(
@@ -134,7 +238,7 @@ The following environment variables are available and can be used for tool param
 use the env var value directly. Check env vars first before using placeholders or asking the user.
 """
     
-    # **SINGLE LLM CALL: Extract tool name and params with schema context**
+    # **STEP 5: Extract using dynamic Pydantic model**
     extraction_prompt = ChatPromptTemplate.from_messages([
         ("system", f"""Extract tool execution plan from the agent's thinking.
 
@@ -142,107 +246,40 @@ use the env var value directly. Check env vars first before using placeholders o
 {env_vars_section}
 
 **CRITICAL INSTRUCTIONS:**
-1. Extract the exact tool name the agent is planning to call (e.g., "GITHUB_FIND_PULL_REQUESTS")
+1. Extract the exact tool name: "{tool_schema.name}"
 2. Extract ALL parameters the agent mentions or plans to use
-3. **If tool schema is provided above:**
-   - You MUST provide ALL required parameters with non-empty values
-   - Check env vars first for parameter values
-   - If no env var exists, use placeholder like WORKSPACE_GID_PLACEHOLDER with reasoning
-4. For each parameter, provide reasoning explaining why that value is chosen
+3. **You MUST provide ALL required parameters with non-empty values**
+4. Check env vars first for parameter values
+5. Use proper types: strings as strings, numbers as numbers, booleans as booleans
 
-If NOT planning a tool call, set tool_name to empty string."""),
+The tool schema above defines the exact structure. Follow it precisely."""),
         ("human", "{scratchpad}")
     ])
     
     try:
         extractor_llm = _get_extractor_llm()
         chain = extraction_prompt | extractor_llm.with_structured_output(
-            ToolExecutionPlanBase,
+            execution_plan_model,
             method="function_calling"
         )
         result = chain.invoke({"scratchpad": scratchpad})
         
-        # If no tool call detected, return None
-        if not result.tool_name:
-            return None
+        # Extract params dict from Pydantic model
+        if hasattr(result, 'params'):
+            params_dict = result.params.model_dump() if hasattr(result.params, 'model_dump') else dict(result.params)
+        else:
+            params_dict = {}
         
-        # **VALIDATE AGAINST SCHEMA** (double-check, but LLM should have gotten it right)
-        tool_schema = _runtime_tool_store.get_tool_schema(result.tool_name)
-        if tool_schema:
-            # Check required params
-            required_params = {p.name for p in tool_schema.parameters if p.required}
-            provided_params = set(result.params.keys())
-            missing_params = required_params - provided_params
-            
-            # Check for empty required string params
-            empty_params = []
-            for param in tool_schema.parameters:
-                if param.required and param.type == 'string':
-                    value = result.params.get(param.name)
-                    if not value or (isinstance(value, str) and value.strip() == ""):
-                        empty_params.append(param.name)
-            
-            if missing_params or empty_params:
-                logger.debug(
-                    f"Validation failed for {result.tool_name}: "
-                    f"missing={missing_params}, empty={empty_params}"
-                )
-                return None  # Agent will retry with better planning
-        
-        return result
+        # Return dict format for storage
+        return {
+            "tool_name": result.tool_name,
+            "reasoning": result.reasoning,
+            "params": params_dict
+        }
         
     except Exception as e:
-        logger.debug(f"Failed to extract planned execution: {e}")
-        return None
-
-
-def _extract_with_base_model(scratchpad: str, tool_name: str) -> ToolExecutionPlanBase | None:
-    """Fallback: extract with base model if tool schema not found."""
-    # Get secrets from secrets store
-    env_vars = _get_all_env_vars()
-    env_vars_section = ""
-    if env_vars:
-        # Escape curly braces in env var values to prevent LangChain template parsing
-        def escape_braces(value: str) -> str:
-            """Escape curly braces for LangChain template."""
-            return str(value).replace("{", "{{").replace("}", "}}")
-        
-        env_vars_list = "\n".join(
-            f"- {key}: {escape_braces(value)}" 
-            for key, value in sorted(env_vars.items())
-        )
-        env_vars_section = f"""
-
-**AVAILABLE ENVIRONMENT VARIABLES:**
-The following environment variables are available and can be used for tool parameters:
-{env_vars_list}
-
-**IMPORTANT:** If a required parameter matches an env var name or pattern, use the env var value directly.
-"""
-    
-    extraction_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""Extract tool execution plan from the agent's thinking.
-
-If the agent is planning to call execute_tool, extract:
-1. tool_name: The exact tool name
-2. reasoning: Why this tool is needed
-3. params: All parameters as JSON object
-4. param_reasoning: Reasoning for each parameter (key: param_name, value: reasoning)
-{env_vars_section}
-
-Return structured output matching ToolExecutionPlanBase schema."""),
-        ("human", "{scratchpad}")
-    ])
-    
-    try:
-        extractor_llm = _get_extractor_llm()
-        chain = extraction_prompt | extractor_llm.with_structured_output(
-            ToolExecutionPlanBase,
-            method="function_calling"
-        )
-        result = chain.invoke({"scratchpad": scratchpad})
-        return result
-    except Exception as e:
-        logger.debug(f"Failed to extract with base model: {e}")
+        logger.error("Failed to extract planned execution for %s: %s", tool_name, e)
+        import traceback
+        logger.debug(traceback.format_exc())
         return None
 

@@ -5,7 +5,6 @@ Demonstrates how to create and run a supervisor agent with a task.
 import asyncio
 import logging
 from langchain_core.messages import HumanMessage
-from langgraph.store.memory import InMemoryStore
 from agents.supervisor import create_supervisor
 
 # Setup logging
@@ -15,12 +14,9 @@ logger = logging.getLogger(__name__)
 async def main():
     """Run a simple example task."""
     
-    # Create shared memory store
-    store = InMemoryStore()
-    
     # Create supervisor agent
     logger.info("Creating supervisor agent...")
-    agent = create_supervisor(store=store)
+    agent = create_supervisor()
     logger.info("✓ Supervisor agent created")
     
     # Example task: GitHub ↔ Asana integration

@@ -1,13 +1,10 @@
 import hashlib
-import json
-from typing import Optional, Annotated
+from typing import Optional, List
 from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 from langchain_core.messages import HumanMessage
 from agents.generic_worker import create_generic_worker
 from models import WorkerResponse, WorkerStatus
-from langgraph.store.base import BaseStore
-from langgraph.prebuilt import InjectedStore
 
 import logging
 
@@ -16,10 +13,9 @@ logger = logging.getLogger(__name__)
 @tool
 async def spawn_worker(
     task_instruction: str,
-    reasoning: str,  # MANDATORY: Why this worker is needed, what service/domain it handles
-    step_id: Optional[int] = None, 
-    runtime: ToolRuntime = None,
-    store: Annotated[BaseStore, InjectedStore] = None
+    reasoning: str,
+    integrations: Optional[List[str]] = None,
+    runtime: ToolRuntime = None
 ) -> str:
     """
     Execute a task using a dynamically spawned worker.
@@ -31,30 +27,30 @@ async def spawn_worker(
         reasoning: **MANDATORY** - Explanation of why this worker is needed and what service/domain it handles.
                    Example: "GitHub domain: Finding and extracting PR information"
                    Must explain: (1) Which service/domain, (2) Why this worker is needed
-        step_id: Optional ID for tracking/debugging (used in thread_id generation)
+        integrations: Optional list of integration names (lowercase, e.g., ["github"], ["asana"], ["github", "asana"]).
+                      If not specified, worker searches all integrations (slower but comprehensive).
+                      Specify integrations to restrict tool search for faster, more focused results.
         runtime: ToolRuntime (automatically provided by LangGraph)
-        store: Shared In-Memory Store (automatically provided)
     
     Returns:
         JSON string of WorkerResponse (status, message, error)
         Todos are automatically updated based on worker response (success → remove todo, failure → keep todo)
     
-    LangFuse Tracing:
-    - Automatically receives callbacks from orchestrator via runtime
-    - Creates nested trace for worker execution
-    - Worker's trace appears as a child span under the orchestrator's trace
+    Note: Callbacks are propagated from runtime if available (for tracing/debugging).
     """
     # Log reasoning (mandatory)
     logger.info(f"🤔 Worker reasoning: {reasoning}")
+    if integrations:
+        logger.info(f"🔗 Worker integrations: {integrations}")
     
-    # Create generic worker dynamically, passing the shared store
-    worker = create_generic_worker("Task Executor", task_instruction, store=store)
+    # Create generic worker dynamically with specified integrations
+    worker = create_generic_worker("Task Executor", task_instruction, integrations=integrations)
     
     # Extract callbacks from runtime to propagate to worker
-    thread_id = f"worker-{step_id or 'dynamic'}-{hashlib.md5(task_instruction.encode()).hexdigest()[:8]}"
+    thread_id = f"worker-{hashlib.md5(task_instruction.encode()).hexdigest()[:8]}"
     config = {"configurable": {"thread_id": thread_id}}
     
-    # CRITICAL: Propagate LangFuse callbacks from orchestrator to worker
+    # Propagate callbacks from orchestrator to worker (if available)
     callbacks = []
     if runtime:
         # Try to get callbacks from runtime
@@ -93,9 +89,10 @@ async def spawn_worker(
             return worker_response.model_dump_json()
     except Exception as e:
         # Exception - return failure response
+        import traceback
         worker_response = WorkerResponse(
             status=WorkerStatus.FAILURE,
-            message=f"Error executing worker: {e}",
+            message=f"Error executing worker: {traceback.format_exc()}",
             error=str(e)
         )
         return worker_response.model_dump_json()

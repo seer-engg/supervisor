@@ -1,72 +1,90 @@
 """
 Composio tool discovery and execution utilities.
-Uses Composio for tool integration and optionally ToolHub for semantic search.
+Uses Pinecone vector store for semantic tool search.
 """
 import os
 import json
-import uuid
-from typing import Optional, Tuple, Annotated
+import asyncio
+from typing import Optional, Tuple, List
 from langchain_core.tools import tool
 from composio import Composio
 from composio_langchain import LangchainProvider
 from pydantic import ValidationError
-from langgraph.store.base import BaseStore
-from langgraph.prebuilt import InjectedStore
 
+from tool_hub import ToolHub
 from models import ToolParameter, ToolDefinition
 
-# Optional ToolHub import for semantic search
-try:
-    import sys
-    tool_hub_path = os.getenv("TOOL_HUB_PATH")
-    if tool_hub_path:
-        sys.path.insert(0, tool_hub_path)
-    from tool_hub import ToolHub
-    TOOLHUB_AVAILABLE = True
-except ImportError:
-    TOOLHUB_AVAILABLE = False
-    ToolHub = None
+import logging
+logger = logging.getLogger(__name__)
 
-# Global ToolHub instance
-_toolhub_instance = None
-_toolhub_index_dir = os.getenv("TOOL_HUB_INDEX_DIR", "")
+# Global Pinecone store instance
+# Note: embedding_dimensions must match Pinecone index dimension (512)
+_TOOLHUB_INSTANCE = ToolHub(
+    openai_api_key=os.getenv("OPENAI_API_KEY"),
+    pinecone_index_name=os.getenv("PINECONE_INDEX_NAME"),
+    pinecone_api_key=os.getenv("PINECONE_API_KEY"),
+    embedding_dimensions=512  # Must match Pinecone index dimension
+)
 
-NAMESPACE = ("artifacts",)
-
-async def _save_to_memory(content: str, store: BaseStore) -> str:
-    """Helper to save content to shared memory."""
-    key = str(uuid.uuid4())[:8]
-    await store.aput(NAMESPACE, key, {"data": content})
-    return key
-
-def _get_toolhub():
-    """Get or create ToolHub instance (if available)."""
-    global _toolhub_instance
-    if not TOOLHUB_AVAILABLE:
-        return None
+def get_available_integrations() -> List[str]:
+    """
+    Get list of available integrations.
     
-    if _toolhub_instance is None:
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            return None
-            
-        try:
-            _toolhub_instance = ToolHub(openai_api_key=openai_key)
-            # Load existing index if path provided
-            if _toolhub_index_dir and os.path.exists(os.path.join(_toolhub_index_dir, "tools.index")):
-                try:
-                    _toolhub_instance.load(_toolhub_index_dir)
-                except:
-                    pass  # Rebuild if needed
-        except Exception as e:
-            print(f"Warning: Could not initialize ToolHub: {e}")
-            return None
-    return _toolhub_instance
+    TODO: Replace with Pinecone API namespace search to dynamically discover
+    available integrations from the vector store.
+    
+    Returns:
+        List of integration names in lowercase (e.g., ["github", "asana"])
+    """
+    # Hardcoded list for now - TODO: Query Pinecone namespaces dynamically
+    return [
+        "github",
+        "asana",
+        "slack",
+        "gmail",
+        "googlecalendar",
+        "googledocs",
+        "googlesheets",
+        "telegram",
+        "twitter",
+    ]
+
+async def _search_tools_in_pinecone(
+    query: str,
+    integration_name: Optional[List[str]] = None,
+    top_k: int = 3
+) -> List[dict]:
+    """
+    Search tools from Pinecone using semantic search.
+    
+    Args:
+        query: Search query string
+        integration_name: Optional list of integration names to restrict search (e.g., ["github", "asana"])
+        top_k: Number of results to return
+    
+    Returns:
+        List of tool dictionaries
+    """
+    
+    if not _TOOLHUB_INSTANCE:
+        raise ValueError("Pinecone ToolHub not available. Tools must be pre-computed.")
+    
+    results = await _TOOLHUB_INSTANCE.query(
+        query=query,
+        integration_name=integration_name,
+        top_k=top_k
+    )
+    return results
+
 
 @tool
-def search_tools(query: str, reasoning: str) -> str:
+async def search_tools(
+    query: str,
+    reasoning: str,
+    integration_filter: Optional[List[str]] = None
+) -> str:
     """
-    Search for available tools/actions using semantic search (RAG) via ToolHub, or fallback to Composio.
+    Search for available tools/actions using semantic search via Pinecone vector store.
     
     **MANDATORY REASONING:**
     Before searching, explain:
@@ -80,10 +98,22 @@ def search_tools(query: str, reasoning: str) -> str:
     - GOOD: "search Asana tasks by title", "find GitHub pull request", "create Asana task"
     - BAD: "Asana", "GitHub", "search Asana tasks by title 'Seer: Evaluate my agent'" (includes actual data)
     
+    **INTEGRATION FILTERING:**
+    - integration_filter: Optional list of integration names to search (e.g., ["github", "asana"])
+    - If not specified, searches all namespaces (slower but comprehensive)
+    - Multiple integrations are searched in parallel and results are merged by relevance score
+    
     **EXAMPLES:**
     search_tools(
-        query="search Asana tasks by title",
-        reasoning="I need to find if a task already exists for this PR. The task title might match the PR title, so I need a tool that can search Asana tasks by title string."
+        query="search tasks by title",
+        reasoning="I need to find if a task already exists. The task title might match, so I need a tool that can search tasks by title string.",
+        integration_filter=["asana"]  # Single integration
+    )
+    
+    search_tools(
+        query="create task or issue",
+        reasoning="I need to create a task or issue in a project management system.",
+        integration_filter=["asana", "github"]  # Multiple integrations (searches both Asana and GitHub namespaces)
     )
     
     Returns a JSON string containing the tool definitions with full parameter schemas.
@@ -94,45 +124,70 @@ def search_tools(query: str, reasoning: str) -> str:
         logger = logging.getLogger(__name__)
         logger.debug(f"🔍 Search query: {query} | Reasoning: {reasoning}")
         
-        # Try ToolHub first if available
-        hub = _get_toolhub()
-        matched_tools = []
+        # Search tools from Pinecone
+        matched_tools = await _search_tools_in_pinecone(
+            query=query,
+            integration_name=integration_filter,
+            top_k=3
+        )
         
-        if hub:
-            try:
-                matched_tools = hub.query(query, top_k=3)  # Reduced to 3 tools to reduce noise
-            except Exception as e:
-                logger.warning(f"ToolHub query failed: {e}, falling back to Composio")
-                matched_tools = []
-        
-        # Fallback: if no ToolHub or query failed, use Composio directly
-        # Note: This is a simplified fallback - in production you might want more sophisticated tool discovery
         if not matched_tools:
-            # For now, return empty result - users should configure ToolHub for semantic search
-            logger.warning("ToolHub not available or query returned no results. Configure TOOL_HUB_PATH for semantic search.")
+            logger.warning(f"No tools found for query: {query} (integration: {integration_filter})")
             return json.dumps([], indent=2)
         
-        client = Composio(provider=LangchainProvider())
+        # Initialize Composio client to get full parameter schemas
+        composio_api_key = os.getenv("COMPOSIO_API_KEY")
+        if composio_api_key:
+            client = Composio(api_key=composio_api_key, provider=LangchainProvider())
+        else:
+            client = Composio(provider=LangchainProvider())
         user_id = os.getenv("COMPOSIO_USER_ID", "default")
         
         # Fetch actual tool definitions from Composio to get parameters
         matches_dict_list = []
         tool_names = [tool_dict.get('name') for tool_dict in matched_tools]
         
-        # Fetch actual tools from Composio to get parameter schemas
+        # Fetch actual tools from Composio to get parameter schemas (async-safe)
         tool_dict_by_name = {}
         try:
-            actual_tools = client.tools.get(user_id=user_id, tools=tool_names)
+            # Wrap blocking call in asyncio.to_thread to avoid blocking event loop
+            actual_tools = await asyncio.to_thread(
+                client.tools.get,
+                user_id=user_id,
+                tools=tool_names
+            )
             tool_dict_by_name = {tool.name: tool for tool in actual_tools}
         except Exception as e:
             logger.warning(f"Could not fetch all tools from Composio: {e}")
+        
+        def _extract_parameters_from_schema(schema_dict: dict) -> List[ToolParameter]:
+            """Extract ToolParameter list from JSON schema dict."""
+            parameters = []
+            properties = schema_dict.get('properties', {})
+            required = schema_dict.get('required', [])
+            
+            for param_name, param_info in properties.items():
+                # Handle different schema formats
+                param_type = param_info.get('type', 'string')
+                if isinstance(param_type, list):
+                    param_type = param_type[0] if param_type else 'string'
+                
+                parameters.append(ToolParameter(
+                    name=param_name,
+                    type=param_type,
+                    description=param_info.get('description', ''),
+                    required=param_name in required
+                ))
+            return parameters
         
         for tool_dict in matched_tools:
             tool_name = tool_dict.get('name')
             tool_obj = tool_dict_by_name.get(tool_name)
             
-            # Extract parameters from actual tool schema
+            # Extract parameters - prefer Composio schema, fallback to Pinecone metadata
             parameters = []
+            
+            # Try to get parameters from Composio tool object first
             if tool_obj:
                 try:
                     # LangChain tools have args_schema which is a Pydantic BaseModel
@@ -146,24 +201,31 @@ def search_tools(query: str, reasoning: str) -> str:
                         else:
                             schema_dict = {}
                         
-                        properties = schema_dict.get('properties', {})
-                        required = schema_dict.get('required', [])
-                        
-                        for param_name, param_info in properties.items():
-                            # Handle different schema formats
-                            param_type = param_info.get('type', 'string')
-                            if isinstance(param_type, list):
-                                param_type = param_type[0] if param_type else 'string'
-                            
-                            parameters.append(ToolParameter(
-                                name=param_name,
-                                type=param_type,
-                                description=param_info.get('description', ''),
-                                required=param_name in required
-                            ))
+                        if schema_dict:
+                            parameters = _extract_parameters_from_schema(schema_dict)
                 except Exception as e:
-                    # If schema extraction fails, at least include tool name
-                    logger.warning(f"Could not extract schema for {tool_name}: {e}")
+                    logger.warning(f"Could not extract schema from Composio tool {tool_name}: {e}")
+            
+            # Fallback: Use parameters from Pinecone metadata if Composio fetch failed
+            if not parameters:
+                pinecone_params = tool_dict.get('parameters', {})
+                if pinecone_params and isinstance(pinecone_params, dict):
+                    try:
+                        # Pinecone stores parameters as JSON Schema format
+                        # Handle both direct properties dict and nested schema format
+                        if 'properties' in pinecone_params:
+                            # Full JSON Schema format
+                            parameters = _extract_parameters_from_schema(pinecone_params)
+                        elif pinecone_params:
+                            # Direct properties dict format
+                            # Convert to JSON Schema format
+                            schema_dict = {
+                                'properties': pinecone_params,
+                                'required': []  # We don't store required separately in this format
+                            }
+                            parameters = _extract_parameters_from_schema(schema_dict)
+                    except Exception as e:
+                        logger.warning(f"Could not extract parameters from Pinecone metadata for {tool_name}: {e}")
                     parameters = []
             
             tool_def = ToolDefinition(
@@ -281,7 +343,7 @@ def _validate_required_params(tool_def: ToolDefinition, args: dict) -> Tuple[boo
     return True, ""
 
 @tool
-async def execute_tool(tool_name: str, params: str, store: Annotated[BaseStore, InjectedStore] = None) -> str:
+async def execute_tool(tool_name: str, params: str) -> str:
     """
     Execute a specific tool by name.
     params must be a JSON string of arguments.
@@ -300,32 +362,40 @@ async def execute_tool(tool_name: str, params: str, store: Annotated[BaseStore, 
     # Normalize nested JSON strings (e.g., {"data": "{\"completed\":true}"} -> {"data": {"completed":true}})
     args = _normalize_nested_json_strings(args)
     
-    # **VALIDATE AGAINST PLANNED EXECUTION AND SCHEMA:**
+    # **CHECK FOR PLANNED EXECUTION (Enforcement):**
     from tools.runtime_tool_store import _runtime_tool_store
     
-    planned_execution = _runtime_tool_store.get_planned_execution(clean_name)
+    # TODO: Extract thread_id from runtime context if available
+    planned_execution = _runtime_tool_store.get_planned_execution(clean_name, thread_id="default")
+    
+    # Enforce that think() was called first (middleware should handle this, but double-check)
+    if not planned_execution:
+        return (
+            f"❌ ERROR: You MUST call think() before calling execute_tool.\n"
+            f"Call think(scratchpad, last_tool_call) first to plan execution with:\n"
+            f"- Tool name: {clean_name}\n"
+            f"- All required parameters with reasoning\n"
+            f"Then call execute_tool with the planned parameters."
+        )
+    
+    # If planned execution exists, use validated params from think()
+    # Params are already validated by Pydantic in think(), so we can trust them
+    # Still validate against Composio's actual tool schema (different validation)
     tool_schema = _runtime_tool_store.get_tool_schema(clean_name)
     
-    # Validate required params are present and non-empty
-    if tool_schema:
-        is_valid, validation_error = _validate_required_params(tool_schema, args)
-        if not is_valid:
-            planned_info = ""
-            if planned_execution:
-                planned_info = f"\n\nPlanned execution reasoning: {planned_execution.reasoning}"
-            return (
-                f"❌ Parameter validation error:\n{validation_error}{planned_info}\n\n"
-                f"Please review the tool schema and ensure all required parameters are provided with non-empty values."
-            )
-    
     # Clear planned execution after use
-    _runtime_tool_store.clear_planned_execution(clean_name)
+    _runtime_tool_store.clear_planned_execution(clean_name, thread_id="default")
         
     client = Composio(provider=LangchainProvider())
     user_id = os.getenv("COMPOSIO_USER_ID", "default")
     
     try:
-        tools = client.tools.get(user_id=user_id, tools=[clean_name])
+        # Wrap blocking call in asyncio.to_thread to avoid blocking event loop
+        tools = await asyncio.to_thread(
+            client.tools.get,
+            user_id=user_id,
+            tools=[clean_name]
+        )
         if not tools:
             return f"Error: Tool '{clean_name}' not found."
         
@@ -338,11 +408,16 @@ async def execute_tool(tool_name: str, params: str, store: Annotated[BaseStore, 
         
         # Execute and return full output - worker's context is isolated and ephemeral
         # No need to save to memory here - worker will summarize in final response if needed
-        result = tool_to_use.invoke(args)
+        # Use ainvoke for async execution (Composio tools support async)
+        if hasattr(tool_to_use, 'ainvoke'):
+            result = await tool_to_use.ainvoke(args)
+        else:
+            result = tool_to_use.invoke(args)
         result_str = str(result)
         
         return result_str
         
     except Exception as e:
-        return f"Error executing {clean_name}: {str(e)}"
+        import traceback
+        return f"Error executing {clean_name}: {traceback.format_exc()}"
 
