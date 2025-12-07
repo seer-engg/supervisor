@@ -1,6 +1,6 @@
-# Delegate Model
+# Supervisor
 
-Supervisor-worker orchestrator with explicit planning and dynamic worker spawning for multi-step integration tasks.
+An orchestrator with explicit planning and dynamic worker spawning for multi-step integration tasks.
 
 ## Architecture
 

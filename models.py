@@ -1,5 +1,5 @@
 """
-Pydantic models for Delegate Model.
+Pydantic models for Supervisor.
 Replaces string checks, dict access, and regex parsing with type-safe models.
 """
 from enum import Enum

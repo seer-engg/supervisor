@@ -1,5 +1,5 @@
 """
-Example usage of the Delegate Model.
+Example usage of the Supervisor.
 Demonstrates how to create and run a supervisor agent with a task.
 """
 import asyncio
