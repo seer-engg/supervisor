@@ -1,0 +1,28 @@
+# Core LangChain dependencies
+langchain>=1.1.2
+langchain-core>=1.1.1
+langchain-openai>=1.1.0
+langgraph>=1.0.4
+
+# LangServe for API server
+langserve[all]>=0.3.3
+
+# FastAPI and server
+fastapi>=0.124.0
+uvicorn[standard]>=0.38.0
+
+# Pinecone for tool search
+langchain-pinecone>=0.2.13
+pinecone<8.0.0
+
+# Composio for tool integration
+composio-core>=0.7.21
+composio-langchain>=0.9.4
+
+# Core dependencies
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# ToolHub (installed from git)
+git+https://github.com/seer-engg/tool_hub.git
+

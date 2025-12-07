@@ -1,0 +1,15 @@
+# Files to ignore in Railway deployment
+.env
+*.pyc
+__pycache__/
+*.log
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+*.swp
+*.swo
+*~
+
