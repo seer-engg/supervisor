@@ -2,9 +2,8 @@
 Composio tool discovery and execution utilities.
 Uses Pinecone vector store for semantic tool search.
 """
-# Import config FIRST to ensure environment variables are loaded
 import config
-
+import os
 import json
 import asyncio
 from typing import Optional, Tuple, List
