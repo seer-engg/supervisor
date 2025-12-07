@@ -11,6 +11,13 @@ dependencies = [
   "langchain-openai>=1.1.0",
   "langgraph>=1.0.4",
   
+  # LangServe for API server
+  "langserve[all]>=0.3.3",
+  
+  # FastAPI and server
+  "fastapi>=0.124.0",
+  "uvicorn[standard]>=0.38.0",
+  
   # Pinecone for tool search
   "langchain-pinecone>=0.2.13",
   "pinecone<8.0.0",

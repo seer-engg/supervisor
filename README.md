@@ -45,9 +45,28 @@ asyncio.run(main())
 
 ## Deployment
 
+### Option 1: LangGraph Cloud (Managed)
+
 1. `pip install langgraph-cli` → `langgraph login` → `langgraph deploy`
 
 **Notes:** Traces auto-saved (LangSmith API). Store persistence handled by Cloud. Pre-compute tools in Pinecone first.
+
+### Option 2: Self-Hosted with LangServe (Recommended)
+
+Deploy on Railway, Render, AWS, or any platform:
+
+1. **Install dependencies:** `pip install -e .`
+2. **Set environment variables** (see above)
+3. **Run server:** `python server.py`
+4. **Deploy to your platform** (see [README_DEPLOYMENT.md](README_DEPLOYMENT.md))
+
+**Advantages:**
+- ✅ Full control over infrastructure
+- ✅ No DNS/infrastructure issues
+- ✅ Often cheaper than managed services
+- ✅ Same API capabilities (streaming, batch, etc.)
+
+See [README_DEPLOYMENT.md](README_DEPLOYMENT.md) for detailed deployment instructions.
 
 ## Pre-computing Tool Index
 
