@@ -3,7 +3,7 @@ name = "supervisor"
 version = "0.1.0"
 description = "Supervisor-Worker Architecture for Multi-Step Integration Tasks"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
   # LangChain ecosystem
   "langchain>=1.1.2",
