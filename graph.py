@@ -6,6 +6,10 @@ Note:
 - Execution traces are automatically saved by LangGraph Cloud (no store needed for traces)
 - LangGraph Cloud handles store persistence automatically if needed
 """
+# CRITICAL: Import config FIRST to ensure environment variables are loaded
+# before importing any modules that depend on them
+import config  # noqa: F401
+
 from agents.supervisor import create_supervisor
 
 # Create the graph

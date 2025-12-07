@@ -1,6 +1,8 @@
 import json
 import logging
 from langchain_openai import ChatOpenAI
+# Import config to ensure environment variables are loaded
+import config
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, ModelRetryMiddleware
@@ -139,7 +141,12 @@ def create_supervisor():
 """
     
     # 3. Define Model & Middleware
-    model = ChatOpenAI(model="gpt-5-mini", temperature=0.0)
+    # Use config module which ensures OPENAI_API_KEY is available
+    model = ChatOpenAI(
+        model="gpt-5-mini",
+        temperature=0.0,
+        api_key=config.OPENAI_API_KEY  # From config module (validated on import)
+    )
     
     # Middleware: Model retry + Tool call limits
     # ModelRetryMiddleware: Retries model calls with exponential backoff (4 total attempts: initial + 3 retries)

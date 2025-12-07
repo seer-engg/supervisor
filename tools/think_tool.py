@@ -6,6 +6,8 @@ from tools.secrets_store import _secrets_store
 from tools.composio_tools import get_available_integrations
 from models import ToolDefinition, ToolParameter
 from pydantic import BaseModel, Field, create_model
+# Import config to ensure environment variables are loaded
+import config
 import re
 import logging
 from typing import Dict, Optional, Any, Type, List
@@ -19,7 +21,12 @@ def _get_extractor_llm():
     """Lazy-load the extractor LLM."""
     global _extractor_llm
     if _extractor_llm is None:
-        _extractor_llm = ChatOpenAI(model="gpt-5-mini", temperature=0.0)
+        # Use config module which ensures OPENAI_API_KEY is available
+        _extractor_llm = ChatOpenAI(
+            model="gpt-5-mini",
+            temperature=0.0,
+            api_key=config.OPENAI_API_KEY  # From config module (validated on import)
+        )
     return _extractor_llm
 
 def _get_all_env_vars() -> Dict[str, str]:

@@ -18,20 +18,17 @@ Environment Variables:
     PINECONE_API_KEY: Required - Pinecone API key
     PINECONE_INDEX_NAME: Required - Pinecone index name
     COMPOSIO_API_KEY: Optional - Composio API key
-    LANGFUSE_PUBLIC_KEY: Optional - LangFuse public key for tracing
-    LANGFUSE_SECRET_KEY: Optional - LangFuse secret key for tracing
-    LANGFUSE_HOST: Optional - LangFuse host (default: https://cloud.langfuse.com)
     PORT: Optional - Server port (default: 8000)
 """
+# CRITICAL: Import config FIRST to load and validate environment variables
+# This must happen before any other imports that depend on env vars
+import config  # noqa: F401
+
 import os
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -84,32 +81,22 @@ add_routes(
 @app.get("/health")
 async def health_check():
     """Health check endpoint with environment variable validation."""
-    required_vars = [
-        "OPENAI_API_KEY",
-        "COMPOSIO_USER_ID",
-        "PINECONE_API_KEY",
-        "PINECONE_INDEX_NAME"
-    ]
+    env_summary = config.get_env_summary()
     
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    
-    status = "healthy" if not missing_vars else "unhealthy"
+    all_required_set = all(env_summary["required"].values())
+    status = "healthy" if all_required_set else "unhealthy"
     
     response = {
         "status": status,
         "service": "supervisor-agent",
         "version": "1.0.0",
-        "environment": {
-            "openai_api_key_set": bool(os.getenv("OPENAI_API_KEY")),
-            "composio_user_id_set": bool(os.getenv("COMPOSIO_USER_ID")),
-            "pinecone_api_key_set": bool(os.getenv("PINECONE_API_KEY")),
-            "pinecone_index_name_set": bool(os.getenv("PINECONE_INDEX_NAME")),
-        }
+        "environment": env_summary
     }
     
-    if missing_vars:
-        response["missing_variables"] = missing_vars
-        response["error"] = f"Missing required environment variables: {', '.join(missing_vars)}"
+    if not all_required_set:
+        missing = [var for var, is_set in env_summary["required"].items() if not is_set]
+        response["missing_variables"] = missing
+        response["error"] = f"Missing required environment variables: {', '.join(missing)}"
     
     return response
 
@@ -128,6 +115,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     
+    # Get port and host from environment (Railway sets PORT automatically)
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")
     
