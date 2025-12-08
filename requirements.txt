@@ -4,6 +4,7 @@ langchain-core>=1.1.1
 langchain-openai>=1.1.0
 langgraph>=1.0.4
 langgraph-api==0.5.33
+langgraph-cli[inmem]>=0.4.7
 
 # Pinecone for tool search
 langchain-pinecone>=0.2.13
