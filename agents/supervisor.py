@@ -9,7 +9,6 @@ from langchain.agents.middleware import ToolCallLimitMiddleware, ModelRetryMiddl
 from langchain_core.tools import tool
 from langchain.tools import ToolRuntime
 from langgraph.graph import StateGraph, END, START
-from langgraph.checkpoint.memory import MemorySaver
 
 from .state import SupervisorState
 from tools.spawn_worker import spawn_worker
@@ -177,7 +176,6 @@ def create_supervisor():
         messages = state.get("messages", [])
         
         # Ensure all messages are proper LangChain message objects
-        # LangServe may pass dicts or BaseMessage instances that need to be proper subclasses
         # CRITICAL: create_agent expects HumanMessage, AIMessage, etc., not generic BaseMessage
         normalized_messages = []
         for msg in messages:
@@ -394,5 +392,5 @@ def create_supervisor():
         END: END
     })
     
-    return workflow.compile(checkpointer=MemorySaver())
+    return workflow.compile()
 

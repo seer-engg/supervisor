@@ -51,22 +51,20 @@ asyncio.run(main())
 
 **Notes:** Traces auto-saved (LangSmith API). Store persistence handled by Cloud. Pre-compute tools in Pinecone first.
 
-### Option 2: Self-Hosted with LangServe (Recommended)
+### Option 2: Self-Hosted with LangGraph (Recommended)
 
-Deploy on Railway, Render, AWS, or any platform:
+Deploy on Railway, Render, AWS, or any platform using LangGraph API:
 
 1. **Install dependencies:** `pip install -e .`
 2. **Set environment variables** (see above)
-3. **Run server:** `python server.py`
-4. **Deploy to your platform** (see [README_DEPLOYMENT.md](README_DEPLOYMENT.md))
+3. **Run LangGraph server:** `langgraph dev --port 8000 --host 0.0.0.0 --config langgraph.json`
+4. **Deploy using Docker:** Use the provided `Dockerfile` for containerized deployment
 
 **Advantages:**
 - ✅ Full control over infrastructure
-- ✅ No DNS/infrastructure issues
-- ✅ Often cheaper than managed services
+- ✅ Native LangGraph API (no LangServe wrapper)
 - ✅ Same API capabilities (streaming, batch, etc.)
-
-See [README_DEPLOYMENT.md](README_DEPLOYMENT.md) for detailed deployment instructions.
+- ✅ Consistent with Seer deployment model
 
 ## Pre-computing Tool Index
 

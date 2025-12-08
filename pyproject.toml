@@ -1,6 +1,6 @@
 [project]
 name = "supervisor"
-version = "0.1.0"
+version = "0.1.1"
 description = "Supervisor-Worker Architecture for Multi-Step Integration Tasks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -10,13 +10,7 @@ dependencies = [
   "langchain-core>=1.1.1",
   "langchain-openai>=1.1.0",
   "langgraph>=1.0.4",
-  
-  # LangServe for API server
-  "langserve[all]>=0.3.3",
-  
-  # FastAPI and server
-  "fastapi>=0.124.0",
-  "uvicorn[standard]>=0.38.0",
+  "langgraph-api==0.5.33",
   
   # Pinecone for tool search
   "langchain-pinecone>=0.2.13",
