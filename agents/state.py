@@ -2,6 +2,22 @@ from typing import TypedDict, Annotated, List, Optional, Dict, Any
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
+class Context(TypedDict):
+    """
+    Context for the supervisor agent.
+    """
+    #integrations is a dictionary of integration names and their corresponding context eg 
+    # {
+    #     "sandbox": null,
+    #     "github": {
+    #         "id": "1098514231",
+    #         "name": "seer-engg/reflexion"
+    #     },
+    #     "googledrive": null,
+    #     "asana": null
+    # }
+    integrations: Dict[str, Any]
+
 class SupervisorState(TypedDict):
     """
     State for the main Supervisor agent.
@@ -9,7 +25,8 @@ class SupervisorState(TypedDict):
     """
     messages: Annotated[List[BaseMessage], add_messages]
     todos: List[str]  # Simple list of todo items (tasks to complete)
-    tool_call_counts: Optional[Dict[str, int]]  # Track tool calls 
+    tool_call_counts: Optional[Dict[str, int]]  # Track tool calls
+    context: Context
 
 class WorkerState(TypedDict):
     """
