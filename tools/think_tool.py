@@ -36,7 +36,35 @@ def _get_all_env_vars() -> Dict[str, str]:
     """
     return _secrets_store.get_all()
 
-@tool
+from pydantic import Field, model_validator
+from typing import Any
+
+class ThinkInput(BaseModel):
+    """Input model for think tool with case-insensitive field handling."""
+    last_tool_call: str = Field(default="", description="What tool was just called and what it returned")
+    scratchpad: str = Field(..., description="Your reasoning, plans, and analysis")
+    
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_keys(cls, data: Any) -> Any:
+        """Normalize field names to lowercase to handle case variations."""
+        if isinstance(data, dict):
+            normalized = {}
+            for key, value in data.items():
+                # Normalize key to lowercase
+                normalized_key = key.lower()
+                # Map common variations
+                if normalized_key in ['scratchpad', 'scratch_pad']:
+                    normalized['scratchpad'] = value
+                elif normalized_key in ['last_tool_call', 'lasttoolcall', 'last_tool']:
+                    normalized['last_tool_call'] = value
+                else:
+                    # Keep original key if not recognized
+                    normalized[key] = value
+            return normalized
+        return data
+
+@tool(args_schema=ThinkInput)
 def think(
     last_tool_call: str,
     scratchpad: str,
