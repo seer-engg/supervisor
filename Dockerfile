@@ -7,11 +7,15 @@ WORKDIR /app
 
 # Copy project files
 COPY . /app
+# Install Python dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN pip install -e .
+# Install project in editable mode (if pyproject.toml exists)
+RUN if [ -f pyproject.toml ]; then pip install --no-cache-dir -e .; fi
 
 # Expose the default LangGraph API port
-EXPOSE 8000
+EXPOSE 8080
 
 # The base image already sets the entrypoint to run LangGraph API server
 # It will automatically detect langgraph.json files and serve the graphs
