@@ -8,7 +8,7 @@ WORKDIR /app
 # Copy project files
 COPY . /app
 
-RUN pip install --no-cache-dir .
+RUN pip install -e .
 
 # Expose the default LangGraph API port
 EXPOSE 8000
