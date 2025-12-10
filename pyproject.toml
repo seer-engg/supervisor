@@ -1,6 +1,6 @@
 [project]
 name = "supervisor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Supervisor-Worker Architecture for Multi-Step Integration Tasks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,14 +12,16 @@ dependencies = [
   "langgraph>=1.0.4",
   "langgraph-api==0.5.33",
   "langgraph-cli[inmem]>=0.4.7",
+  "langgraph-checkpoint>=3.0.1,<4.0.0",
+  "langgraph-checkpoint-postgres>=3.0.1,<4.0.0",
   
   # Pinecone for tool search
   "langchain-pinecone>=0.2.13",
   "pinecone<8.0.0",
   
   # Composio for tool integration
-  "composio-core>=0.7.21",
-  "composio-langchain>=0.9.4",
+  "composio==0.9.4",
+  "composio-langchain==0.9.4",
   
   # Core dependencies
   "pydantic>=2.0.0",
