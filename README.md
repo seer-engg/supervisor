@@ -49,7 +49,7 @@ asyncio.run(main())
 
 1. `pip install langgraph-cli` → `langgraph login` → `langgraph deploy`
 
-**Notes:** Traces auto-saved (LangSmith API). Store persistence handled by Cloud. Pre-compute tools in Pinecone first.
+**Notes:** Traces auto-saved (Langfuse API). Store persistence handled by Cloud. Pre-compute tools in Pinecone first.
 
 ### Option 2: Self-Hosted with LangGraph (Recommended)
 
@@ -96,7 +96,7 @@ Credentials managed through Composio (not `.env`). Multi-user: use each user's `
 - Semantic tool discovery (Hub & Spoke: semantic + dependency expansion)
 - Plan visibility (stored in state)
 - Context isolation
-- Full observability (LangSmith API)
+- Full observability (Langfuse API)
 
 ## Limitations
 

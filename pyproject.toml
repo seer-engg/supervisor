@@ -1,6 +1,6 @@
 [project]
 name = "supervisor"
-version = "0.1.2"
+version = "0.1.3"
 description = "Supervisor-Worker Architecture for Multi-Step Integration Tasks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,9 @@ dependencies = [
   # Core dependencies
   "pydantic>=2.0.0",
   "python-dotenv>=1.0.0",
+  
+  # Langfuse for tracing (latest version)
+  "langfuse>=3.10.5",
   
   # ToolHub for semantic tool search
   "tool-hub @ git+https://github.com/seer-engg/tool_hub.git"

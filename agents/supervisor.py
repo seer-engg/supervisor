@@ -1,15 +1,12 @@
+import config
 import json
 import logging
 from langchain_openai import ChatOpenAI
-# Import config to ensure environment variables are loaded
-import config
+from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage, BaseMessage
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolCallLimitMiddleware, ModelRetryMiddleware
-from langchain_core.tools import tool
-from langchain.tools import ToolRuntime
 from langgraph.graph import StateGraph, END, START
-
 from .state import SupervisorState
 from tools.spawn_worker import spawn_worker
 from tools.think_tool import think
@@ -18,9 +15,29 @@ from models import WorkerResponse, WorkerStatus
 
 logger = logging.getLogger(__name__)
 
+# Langfuse integration (optional)
+try:
+    from langfuse.langchain import CallbackHandler
+    from langfuse import get_client
+    import os
+    
+    # Initialize global Langfuse client if credentials are available
+    # This satisfies @observe decorators in dependencies that expect a client
+    if os.getenv("LANGFUSE_PUBLIC_KEY"):
+        try:
+            _ = get_client()  # Initialize singleton client
+        except Exception:
+            pass  # Client initialization failed, will rely on CallbackHandler only
+    
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+    CallbackHandler = None
+    get_client = None
+
 
 @tool
-def write_todos(todos: list[str], runtime: ToolRuntime = None) -> str:
+def write_todos(todos: list[str]) -> str:
     """Update the todos list. Pass a list of todo items (strings).
     
     **CRITICAL GROUPING RULE:**
@@ -227,8 +244,24 @@ def create_supervisor():
         # Invoke the agent
         logger.info(f"Invoking Supervisor (Todos: {len(todos)} items)")
         
-        # Extract callbacks from state if available (for LangSmith tracing)
+        # Extract callbacks from state if available (for Langfuse tracing)
         callbacks = state.get("callbacks", [])
+        
+        # Auto-initialize Langfuse callback if env vars are set and no callbacks provided
+        if not callbacks and LANGFUSE_AVAILABLE and CallbackHandler:
+            import os
+            langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
+            if langfuse_public:
+                try:
+                    # CallbackHandler only accepts public_key as constructor arg
+                    # Make sure these env vars are set before creating the handler
+                    langfuse_handler = CallbackHandler(public_key=langfuse_public)
+                    callbacks = [langfuse_handler]
+                    logger.info(f"📊 Auto-initialized Langfuse tracing")
+                except Exception as e:
+                    logger.warning(f"Langfuse callback initialization failed: {e}")
+            else:
+                logger.debug("Langfuse env vars not set - skipping tracing")
         
         agent_input = dict(state)
         agent_input["messages"] = messages
