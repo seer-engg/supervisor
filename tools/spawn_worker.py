@@ -43,12 +43,30 @@ async def spawn_worker(
     if integrations:
         logger.info(f"🔗 Worker integrations: {integrations}")
     
-    # Create generic worker dynamically with specified integrations
-    worker = create_generic_worker("Task Executor", task_instruction, integrations=integrations)
-    
     # Extract callbacks from runtime to propagate to worker
     thread_id = f"worker-{hashlib.md5(task_instruction.encode()).hexdigest()[:8]}"
     config = {"configurable": {"thread_id": thread_id}}
+    
+    # CRITICAL: Copy Supervisor's user context to worker's thread_id BEFORE creating worker
+    # Workers need access to user_id, connected_accounts, and resource_ids (workspace GID, etc.)
+    from tools.user_context_store import get_user_context_store
+    user_context_store = get_user_context_store()
+    
+    # Get Supervisor's context (stored under "default" thread_id)
+    supervisor_context = user_context_store.get_user_context(thread_id="default")
+    
+    # Copy Supervisor's context to worker's thread_id so worker tools can access it
+    if supervisor_context.get("user_id") or supervisor_context.get("connected_accounts"):
+        user_context_store._user_contexts[thread_id] = supervisor_context.copy()
+        # Set thread_id in context variable so tools can access it
+        user_context_store.set_current_thread_id(thread_id)
+        logger.info(f"✅ Copied Supervisor context to worker thread {thread_id}: user_id={supervisor_context.get('user_id')}, connected_accounts={supervisor_context.get('connected_accounts')}, resource_ids={supervisor_context.get('resource_ids')}")
+    else:
+        logger.warning(f"⚠️  No Supervisor context found to copy to worker thread {thread_id}")
+    
+    # Create generic worker dynamically with specified integrations
+    # Now that context is set, worker creation can access resource IDs
+    worker = create_generic_worker("Task Executor", task_instruction, integrations=integrations)
     
     # Propagate callbacks from orchestrator to worker (if available)
     callbacks = []
@@ -62,6 +80,10 @@ async def spawn_worker(
     
     if callbacks:
         config["callbacks"] = callbacks
+    
+    # CRITICAL: Set thread_id in context variable BEFORE invoking worker
+    # This allows worker's tools to access the correct user context
+    user_context_store.set_current_thread_id(thread_id)
     
     # Execute worker with callbacks
     try:

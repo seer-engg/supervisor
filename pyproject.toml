@@ -26,6 +26,7 @@ dependencies = [
   # Core dependencies
   "pydantic>=2.0.0",
   "python-dotenv>=1.0.0",
+  "fastapi>=0.100.0",  # For Composio proxy API
   
   # Langfuse for tracing (latest version)
   "langfuse>=3.10.5",

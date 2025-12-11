@@ -19,7 +19,9 @@ pip install -e .
 
 **Required:** `OPENAI_API_KEY`, `COMPOSIO_USER_ID`, `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`
 
-**Optional:** `COMPOSIO_API_KEY`, `ASANA_WORKSPACE_ID`, `ASANA_PROJECT_ID`
+**Optional:** `COMPOSIO_API_KEY`
+
+**Note:** Supervisor no longer uses hardcoded integration-specific IDs (like `ASANA_WORKSPACE_ID`, `GITHUB_REPO_ID`, etc.). Workers discover resources dynamically using the user's connected accounts. If sandbox mode is needed, it should be passed from the frontend via context.
 
 **Note**: Tools must be pre-computed in Pinecone before use.
 
@@ -102,5 +104,4 @@ Credentials managed through Composio (not `.env`). Multi-user: use each user's `
 
 - Requires pre-computed Pinecone index
 - Optimized for Composio integrations
-- Secrets store only supports Asana workspace/project IDs
 - Worker auto-removal uses simple heuristic
