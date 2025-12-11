@@ -250,18 +250,13 @@ def create_supervisor():
         # Auto-initialize Langfuse callback if env vars are set and no callbacks provided
         if not callbacks and LANGFUSE_AVAILABLE and CallbackHandler:
             import os
-            from langfuse.types import TraceContext
+            from langfuse import propagate_attributes
             langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
             project_name = os.getenv("PROJECT_NAME", "supervisor-v1")
             if langfuse_public:
                 try:
-                    # Add project_name metadata to trace context for filtering
-                    trace_context = TraceContext(
-                        metadata={"project_name": project_name}
-                    )
                     langfuse_handler = CallbackHandler(
-                        public_key=langfuse_public,
-                        trace_context=trace_context
+                        public_key=langfuse_public
                     )
                     callbacks = [langfuse_handler]
                     logger.info(f"📊 Auto-initialized Langfuse tracing with project_name={project_name}")
@@ -273,13 +268,20 @@ def create_supervisor():
         agent_input = dict(state)
         agent_input["messages"] = messages
         
-        # Pass callbacks to agent invocation if available
+        # Pass callbacks and metadata to agent invocation if available
         invoke_kwargs = {}
         if callbacks:
+            import os
+            from langfuse import propagate_attributes
+            project_name = os.getenv("PROJECT_NAME", "supervisor-v1")
             invoke_kwargs["config"] = {"callbacks": callbacks}
-            logger.debug(f"📊 Passing {len(callbacks)} callback(s) to agent")
-        
-        result = await agent_runnable.ainvoke(agent_input, **invoke_kwargs)
+            logger.debug(f"📊 Passing {len(callbacks)} callback(s) to agent with project_name={project_name}")
+            # Use propagate_attributes to ensure metadata is attached to root trace
+            # This wraps the invocation to propagate metadata to all observations
+            with propagate_attributes(metadata={"project_name": project_name}):
+                result = await agent_runnable.ainvoke(agent_input, **invoke_kwargs)
+        else:
+            result = await agent_runnable.ainvoke(agent_input, **invoke_kwargs)
         
         # DEBUG: Log agent response
         agent_messages = result.get("messages", [])
