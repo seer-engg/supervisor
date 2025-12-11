@@ -6,7 +6,7 @@ import config
 import os
 import json
 import asyncio
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 from langchain_core.tools import tool
 from composio import Composio
 from composio_langchain import LangchainProvider
@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from tool_hub import ToolHub
 from models import ToolParameter, ToolDefinition
+from agents.state import SupervisorState
 
 import logging
 logger = logging.getLogger(__name__)
@@ -39,6 +40,41 @@ def _get_toolhub_instance():
         logger.info("✅ ToolHub instance initialized")
     
     return _TOOLHUB_INSTANCE
+
+def get_user_context_from_state(state: Optional[SupervisorState] = None) -> Dict[str, Any]:
+    """
+    Extract user context from SupervisorState.
+    
+    Returns:
+        dict with:
+        - user_id: str (from context or env var fallback)
+        - connected_accounts: Dict[str, str] (maps integration_type -> connected_account_id)
+    """
+    if not state:
+        return {
+            "user_id": os.getenv("COMPOSIO_USER_ID", "default"),
+            "connected_accounts": {}
+        }
+    
+    context = state.get("context", {})
+    integrations = context.get("integrations", {})
+    
+    # Extract user_id from context (could be passed from frontend)
+    user_id = context.get("user_id") or context.get("user_email")
+    
+    # Extract connected account IDs from integrations
+    # Structure: { "github": {"id": "conn_abc123", "name": "repo"}, ... }
+    connected_accounts = {}
+    for integration_type, selection in integrations.items():
+        if isinstance(selection, dict) and selection.get("id"):
+            # The "id" field should be the Composio connected_account_id
+            connected_accounts[integration_type] = selection["id"]
+    
+    return {
+        "user_id": user_id or os.getenv("COMPOSIO_USER_ID", "default"),
+        "connected_accounts": connected_accounts
+    }
+
 
 def get_available_integrations() -> List[str]:
     """
@@ -155,7 +191,11 @@ async def search_tools(
             client = Composio(api_key=composio_api_key, provider=LangchainProvider())
         else:
             client = Composio(provider=LangchainProvider())
-        user_id = os.getenv("COMPOSIO_USER_ID", "default")
+        
+        # Get user_id from context store (user-specific, not env var)
+        from tools.user_context_store import get_user_context_store
+        user_context = get_user_context_store().get_user_context(thread_id="default")
+        user_id = user_context["user_id"]
         
         # Fetch actual tool definitions from Composio to get parameters
         matches_dict_list = []
@@ -399,34 +439,55 @@ async def execute_tool(tool_name: str, params: str) -> str:
     
     # Clear planned execution after use
     _runtime_tool_store.clear_planned_execution(clean_name, thread_id="default")
+    
+    # Get user_id and connected_account_id from context store (user-specific, not env var)
+    from tools.user_context_store import get_user_context_store
+    user_context = get_user_context_store().get_user_context(thread_id="default")
+    user_id = user_context["user_id"]
+    connected_accounts = user_context["connected_accounts"]
         
     client = Composio(provider=LangchainProvider())
-    user_id = os.getenv("COMPOSIO_USER_ID", "default")
+    
+    # Determine which integration this tool belongs to (for connected_account_id)
+    # Tool names typically follow pattern: INTEGRATION_ACTION (e.g., GITHUB_FIND_PULL_REQUESTS)
+    integration_type = None
+    tool_name_lower = clean_name.lower()
+    for integration in ["github", "asana", "googledrive", "googledocs", "googlesheets", "gmail", "slack"]:
+        if tool_name_lower.startswith(integration):
+            integration_type = integration
+            break
+    
+    # Use connected_account_id if available for this integration
+    connected_account_id = connected_accounts.get(integration_type) if integration_type else None
     
     try:
+        # CRITICAL: Use tools.execute() with connected_account_id to ensure we use the user's account
+        # NOT the sandbox account. This matches the proxy pattern.
         # Wrap blocking call in asyncio.to_thread to avoid blocking event loop
-        tools = await asyncio.to_thread(
-            client.tools.get,
-            user_id=user_id,
-            tools=[clean_name]
-        )
-        if not tools:
-            return f"Error: Tool '{clean_name}' not found."
+        def _execute_tool():
+            # Use tools.execute() which accepts connected_account_id parameter
+            # This ensures we use the user's connected account, not the sandbox
+            result = client.tools.execute(
+                clean_name,
+                user_id=user_id,
+                connected_account_id=connected_account_id,
+                arguments=args,
+                dangerously_skip_version_check=True,
+            )
+            return result
         
-        tool_to_use = tools[0]
+        # Debug logging
+        logger.info("[execute_tool] Tool: %s, Integration: %s", clean_name, integration_type)
+        logger.info("[execute_tool] user_id: %s", user_id)
+        logger.info("[execute_tool] connected_accounts dict: %s", connected_accounts)
+        logger.info("[execute_tool] connected_account_id for %s: %s", integration_type, connected_account_id)
         
-        # Validate arguments against tool schema (Pydantic validation)
-        is_valid, validation_error = _validate_tool_args(tool_to_use, args)
-        if not is_valid:
-            return validation_error or "Tool input validation error"
-        
-        # Execute and return full output - worker's context is isolated and ephemeral
-        # No need to save to memory here - worker will summarize in final response if needed
-        # Use ainvoke for async execution (Composio tools support async)
-        if hasattr(tool_to_use, 'ainvoke'):
-            result = await tool_to_use.ainvoke(args)
+        if connected_account_id:
+            logger.info("Using connected_account_id %s for %s tool %s", connected_account_id, integration_type, clean_name)
         else:
-            result = tool_to_use.invoke(args)
+            logger.warning("No connected_account_id for %s tool %s - will try with user_id only: %s", integration_type, clean_name, user_id)
+        
+        result = await asyncio.to_thread(_execute_tool)
         result_str = str(result)
         
         return result_str

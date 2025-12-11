@@ -6,6 +6,9 @@
     "supervisor": "./graph.py:graph"
   },
   "env": ".env",
+  "http": {
+    "app": "./api/composio_proxy.py:app"
+  },
   "store": {
     "index": {
       "embed": "openai:text-embedding-3-small",

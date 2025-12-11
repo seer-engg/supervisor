@@ -2,11 +2,9 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from tools.runtime_tool_store import _runtime_tool_store
-from tools.secrets_store import _secrets_store
 from tools.composio_tools import get_available_integrations
-from models import ToolDefinition, ToolParameter
+from models import ToolDefinition
 from pydantic import BaseModel, Field, create_model
-# Import config to ensure environment variables are loaded
 import config
 import re
 import logging
@@ -28,13 +26,6 @@ def _get_extractor_llm():
             api_key=config.OPENAI_API_KEY  # From config module (validated on import)
         )
     return _extractor_llm
-
-def _get_all_env_vars() -> Dict[str, str]:
-    """
-    Get secrets from secrets store (only specific vars from .env).
-    Returns dict of {var_name: value} with actual values.
-    """
-    return _secrets_store.get_all()
 
 from pydantic import Field, model_validator
 from typing import Any
@@ -256,40 +247,18 @@ Description: {tool_schema.description}
 {chr(10).join(f"- {p.name} ({p.type}): {p.description}" for p in optional_params) if optional_params else "None"}
 """
     
-    # Get all environment variables
-    env_vars = _get_all_env_vars()
-    env_vars_section = ""
-    if env_vars:
-        def escape_braces(value: str) -> str:
-            return str(value).replace("{", "{{").replace("}", "}}")
-        
-        env_vars_list = "\n".join(
-            f"- {key}: {escape_braces(value)}" 
-            for key, value in sorted(env_vars.items())
-        )
-        env_vars_section = f"""
-
-**AVAILABLE ENVIRONMENT VARIABLES:**
-The following environment variables are available and can be used for tool parameters:
-{env_vars_list}
-
-**IMPORTANT:** If a required parameter matches an env var name or pattern (e.g., `workspace_gid` → check for `ASANA_WORKSPACE_GID` or similar), 
-use the env var value directly. Check env vars first before using placeholders or asking the user.
-"""
     
     # **STEP 5: Extract using dynamic Pydantic model**
     extraction_prompt = ChatPromptTemplate.from_messages([
         ("system", f"""Extract tool execution plan from the agent's thinking.
 
 {schema_section}
-{env_vars_section}
 
 **CRITICAL INSTRUCTIONS:**
 1. Extract the exact tool name: "{tool_schema.name}"
 2. Extract ALL parameters the agent mentions or plans to use
 3. **You MUST provide ALL required parameters with non-empty values**
-4. Check env vars first for parameter values
-5. Use proper types: strings as strings, numbers as numbers, booleans as booleans
+4. Use proper types: strings as strings, numbers as numbers, booleans as booleans
 
 The tool schema above defines the exact structure. Follow it precisely."""),
         ("human", "{scratchpad}")

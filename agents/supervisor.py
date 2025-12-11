@@ -149,6 +149,15 @@ def create_supervisor():
     # 5. Define the Node
     async def supervisor_node(state: SupervisorState):
         logger.info("🤖 Supervisor Node Active")
+        
+        # Store user context from state for tools to access
+        from tools.user_context_store import get_user_context_store
+        user_context_store = get_user_context_store()
+        # Extract thread_id from config if available, otherwise use "default"
+        # Note: thread_id is typically in config["configurable"]["thread_id"]
+        # For now, store with "default" - tools will use the same
+        user_context_store.store_user_context(state, thread_id="default")
+        
         messages = state.get("messages", [])
         
         # Ensure all messages are proper LangChain message objects

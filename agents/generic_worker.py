@@ -7,7 +7,6 @@ from typing import Optional, List
 
 from tools.composio_tools import search_tools, execute_tool
 from tools.think_tool import think
-from tools.secrets_store import _secrets_store
 
 from .prompts import PROMPT_GENERIC_WORKER
 
@@ -38,14 +37,27 @@ def create_generic_worker(
         execute_tool, 
     ]
     
-    # Check if this is an Asana-related task and inject secrets
-    secrets_context = ""
-    if integrations and "asana" in integrations:
-        secrets = _secrets_store.get_all()
-        if secrets:
-            secrets_context = "\n\n**ASANA CONFIGURATION:**\n"
-            secrets_context += _secrets_store.format_for_prompt()
-            secrets_context += "\nUse these IDs when calling Asana tools that require workspace_gid or project_gid parameters.\n"
+    # Get resource IDs (workspace GID, project GID, etc.) from user context if available
+    # These are passed from the frontend when user selects resources, so workers don't need to discover them
+    resource_context = ""
+    try:
+        from tools.user_context_store import get_user_context_store
+        user_context = get_user_context_store().get_user_context()
+        resource_ids = user_context.get("resource_ids", {})
+        
+        if resource_ids:
+            resource_lines = []
+            for key, value in sorted(resource_ids.items()):
+                # Format: "asana_workspace_gid" -> "Asana Workspace GID"
+                parts = key.split("_")
+                formatted_key = " ".join(word.capitalize() for word in parts)
+                resource_lines.append(f"- {formatted_key}: {value}")
+            
+            if resource_lines:
+                resource_context = f"\n\n**AVAILABLE RESOURCE IDs (from user selection):**\n" + "\n".join(resource_lines) + "\n\n**IMPORTANT:** Use these IDs directly in tool parameters. Do NOT try to discover or list workspaces/projects - use the provided IDs."
+    except Exception:
+        # If context is not available, continue without resource IDs
+        pass
     
     # Add integration context to system prompt if integrations specified
     integration_context = ""
@@ -58,7 +70,7 @@ def create_generic_worker(
     system_prompt = PROMPT_GENERIC_WORKER.format(
         ROLE_NAME=role_name,
         SPECIFIC_INSTRUCTIONS=specific_instructions,
-        SECRETS_CONTEXT=secrets_context,
+        SECRETS_CONTEXT=resource_context,  # Now contains resource IDs from user selection
         INTEGRATION_CONTEXT=integration_context
     )
     
