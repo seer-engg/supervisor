@@ -470,7 +470,7 @@ async def execute_tool(tool_name: str, params: str) -> str:
             result = client.tools.execute(
                 clean_name,
                 user_id=user_id,
-                connected_account_id=connected_account_id,
+                # connected_account_id=connected_account_id,
                 arguments=args,
                 dangerously_skip_version_check=True,
             )

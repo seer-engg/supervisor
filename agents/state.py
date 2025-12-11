@@ -17,6 +17,7 @@ class Context(TypedDict):
     #     "asana": null
     # }
     integrations: Dict[str, Any]
+    user_id: str
 
 class SupervisorState(TypedDict):
     """
