@@ -250,14 +250,21 @@ def create_supervisor():
         # Auto-initialize Langfuse callback if env vars are set and no callbacks provided
         if not callbacks and LANGFUSE_AVAILABLE and CallbackHandler:
             import os
+            from langfuse.types import TraceContext
             langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
+            project_name = os.getenv("PROJECT_NAME", "supervisor-v1")
             if langfuse_public:
                 try:
-                    # CallbackHandler only accepts public_key as constructor arg
-                    # Make sure these env vars are set before creating the handler
-                    langfuse_handler = CallbackHandler(public_key=langfuse_public)
+                    # Add project_name metadata to trace context for filtering
+                    trace_context = TraceContext(
+                        metadata={"project_name": project_name}
+                    )
+                    langfuse_handler = CallbackHandler(
+                        public_key=langfuse_public,
+                        trace_context=trace_context
+                    )
                     callbacks = [langfuse_handler]
-                    logger.info(f"📊 Auto-initialized Langfuse tracing")
+                    logger.info(f"📊 Auto-initialized Langfuse tracing with project_name={project_name}")
                 except Exception as e:
                     logger.warning(f"Langfuse callback initialization failed: {e}")
             else:
